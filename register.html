@@ -231,6 +231,7 @@
     return errs;
   }
 
+  function payClassOf(g){ var v = g && g.payClass ? String(g.payClass).trim() : ''; return v || 'כללי'; }
   // ---------------- routing (the same rules the admin screen edits) ----------------
   function evaluateRoute(){
     var rt = formCfg.routing || {};
@@ -239,6 +240,23 @@
       if ((specials[i].when || []).length && condsMet(specials[i].when)){
         var a = specials[i].action || {};
         return { source:'חוק: ' + (specials[i].name || ('#' + (i+1))), type:a.type || 'redirect', url:a.url || '', message:a.message || '' };
+      }
+    }
+    var bg = rt.byGroups;
+    if (bg && bg.enabled){
+      var gq = (formCfg.questions || []).filter(function(q){ return q.type === 'groups' && isVisible(q); })[0];
+      var picked = gq ? asArr(answers[gq.id]) : [];
+      if (picked.length){
+        var byId = {}; (cfg.groups || []).forEach(function(g){ byId[g.id] = g; });
+        var classes = picked.map(function(id){ return payClassOf(byId[id]); }).sort();
+        var label = classes.length + ' אימונים (' + classes.join(' + ') + ')', url = '';
+        (bg.extra || []).forEach(function(e){                      // a specially defined combination wins
+          if (!url && e.url && (e.classes || []).length === classes.length && (e.classes || []).slice().sort().join('+') === classes.join('+')){ url = e.url; }
+        });
+        if (!url && picked.length === 1){ url = (bg.links || {})['g|' + picked[0]] || ''; }          // one training: the group itself decides
+        if (!url){ url = (bg.links || {})[classes.length + '|' + classes.join('+')] || ''; }
+        if (!url && classes.length >= 3){ url = (bg.links || {})['3+'] || ''; }
+        if (url) return { source:'לפי הקבוצות שנבחרו: ' + label, type:'redirect', url:url, message:'' };
       }
     }
     var mx = rt.matrix;
