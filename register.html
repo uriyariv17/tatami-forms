@@ -55,6 +55,7 @@
   .submit:hover{ background:var(--brand-dark); } .submit:active{ transform:scale(.985); }
   .submit[disabled]{ opacity:.65; cursor:wait; }
   .secure{ text-align:center; color:var(--muted); font-size:13px; margin-top:14px; }
+  .pitem{ margin:8px 0; } .pitem .opt{ margin:0; } .psize-wrap{ display:flex; align-items:center; gap:10px; margin:6px 14px 2px; } .psize-wrap select{ max-width:220px; padding:10px 12px; }
   .hp{ position:absolute; left:-9999px; top:-9999px; height:0; width:0; overflow:hidden; }
   .panel{ text-align:center; padding:30px 6px 18px; }
   .panel h2{ margin:14px 0 10px; font-size:26px; }
@@ -90,7 +91,8 @@
   var PUBLIC_KEY = 'pk_66847173e49accc97b2f';
 
   var params = new URLSearchParams(window.location.search);
-  var FORM = params.get('form') === 'trial' ? 'trial' : 'registration';
+  var fp = params.get('form');
+  var FORM = (fp === 'trial' || fp === 'merch') ? fp : 'registration';
   var PREVIEW = params.get('preview') === '1';
   var root = document.getElementById('root');
   var startedAt = Date.now();
@@ -218,6 +220,11 @@
     (formCfg.questions || []).forEach(function(q){
       if (!hasInput(q) || !isVisible(q)) return;
       var v = asArr(answers[q.id]);
+      if (q.type === 'products'){
+        if (q.required && !v.length){ errs[q.id] = 'יש לבחור לפחות פריט אחד'; return; }
+        v.forEach(function(c){ var pr = productOf(q, c.id); if (pr && (pr.sizes || []).length && !c.size && !errs[q.id]){ errs[q.id] = 'יש לבחור מידה עבור ' + pr.name; } });
+        return;
+      }
       if (q.type === 'groups'){
         var need = requiredGroupCount(q);
         if (need){ if (v.length !== need) errs[q.id] = 'יש לבחור ' + (need === 1 ? 'קבוצה אחת' : need + ' קבוצות') + ' (נבחרו ' + v.length + ')'; }
@@ -259,6 +266,13 @@
         if (url) return { source:'לפי הקבוצות שנבחרו: ' + label, type:'redirect', url:url, message:'' };
       }
     }
+    var bp = rt.byProducts;
+    if (bp && bp.enabled){
+      var pq = (formCfg.questions || []).filter(function(q){ return q.type === 'products' && isVisible(q); })[0];
+      var items = pq ? asArr(answers[pq.id]).map(function(c){ var pr = productOf(pq, c.id) || {}; return { name:pr.name || '', size:c.size || '', url:String(pr.url || '').trim() }; }) : [];
+      if (items.length === 1 && items[0].url) return { source:'לפי הפריט: ' + items[0].name, type:'redirect', url:items[0].url, message:'' };
+      if (items.length && items.some(function(i){ return i.url; })) return { source:'לפי הפריטים שהוזמנו (' + items.length + ')', type:'links', links:items, message:'תודה! ההזמנה התקבלה. לתשלום, לחצו על כל פריט:' };
+    }
     var mx = rt.matrix;
     if (mx && mx.enabled && mx.rowQ && mx.colQ){
       var r = asArr(answers[mx.rowQ])[0], c = asArr(answers[mx.colQ])[0];
@@ -276,6 +290,7 @@
       var byId = {}; (cfg.groups || []).forEach(function(g){ byId[g.id] = g; });
       return v.map(function(id){ return byId[id] ? byId[id].name : id; }).join(' | ');
     }
+    if (q.type === 'products') return v.map(function(c){ var pr = productOf(q, c.id); return (pr ? pr.name : '') + (c.size ? ' (' + c.size + ')' : ''); }).join(', ');
     if (q.type === 'single_checkbox') return v.length ? 'כן' : 'לא';
     return v.join(', ');
   }
@@ -285,7 +300,8 @@
       if (!hasInput(q) || !isVisible(q)) return;
       var v = asArr(answers[q.id]);
       var disp = displayValue(q);
-      raw[q.id] = (q.type === 'checkbox' || q.type === 'groups') ? v : (v[0] != null ? v[0] : '');
+      raw[q.id] = (q.type === 'checkbox' || q.type === 'groups' || q.type === 'products') ? v : (v[0] != null ? v[0] : '');
+      if (q.type === 'products'){ fixed.items = v.map(function(c){ var pr = productOf(q, c.id); return { name: pr ? pr.name : '', size: c.size || '' }; }); }
       if (disp !== '' || q.required) labeled[q.label] = disp;
       if (q.mapTo){
         if (q.mapTo === 'groups'){ fixed.groups = disp; fixed.groupIds = v.slice(); }
@@ -332,7 +348,8 @@
       if (!hasInput(q) || !isVisible(q) || !q.required) return;
       total++;
       var v = asArr(answers[q.id]);
-      if (q.type === 'groups'){ var need = requiredGroupCount(q); if (need ? v.length === need : v.length > 0) done++; }
+      if (q.type === 'products'){ if (v.length > 0 && v.every(function(c){ var pr = productOf(q, c.id); return !pr || !(pr.sizes || []).length || c.size; })) done++; }
+      else if (q.type === 'groups'){ var need = requiredGroupCount(q); if (need ? v.length === need : v.length > 0) done++; }
       else if (v.length && (q.type !== 'phone' || validPhone(v[0]))) done++;
     });
     box.style.display = total ? '' : 'none';
@@ -422,9 +439,41 @@
       });
     } else if (q.type === 'groups'){
       w.appendChild(h('div', {class:'gbox', id:'g_' + q.id}));
+    } else if (q.type === 'products'){
+      w.appendChild(buildProducts(q));
     }
     if (q.help) w.appendChild(h('div', {class:'help'}, [richText(q.help)]));
     return w;
+  }
+
+  // ---------------- products (clothing orders): pick items, and a size for each ----------------
+  function productOf(q, id){ return (q.products || []).filter(function(p){ return p.id === id; })[0] || null; }
+  function buildProducts(q){
+    var box = h('div', {class:'pbox'});
+    (q.products || []).forEach(function(p){
+      var cur = asArr(answers[q.id]).filter(function(c){ return c.id === p.id; })[0];
+      var cb = h('input', {type:'checkbox', 'data-product':p.id});
+      cb.checked = !!cur;
+      var sizes = p.sizes || [], sel = null, sizeWrap = null;
+      if (sizes.length){
+        sel = h('select', {class:'psize', 'aria-label':'מידה: ' + p.name}, [h('option', {value:''}, ['בחר/י מידה…'])].concat(sizes.map(function(sz){ return h('option', {value:sz}, [sz]); })));
+        sel.value = (cur && cur.size) || '';
+        sizeWrap = h('div', {class:'psize-wrap'}, [h('span', {class:'help', text:'מידה:'}), sel]);
+        sizeWrap.style.display = cb.checked ? '' : 'none';
+      }
+      function commit(){
+        var now = asArr(answers[q.id]).filter(function(c){ return c.id !== p.id; });
+        if (cb.checked){ now.push({ id:p.id, size: sel ? sel.value : '' }); }
+        answers[q.id] = now; saveDraft(); setErr(q.id, null);
+        if (sizeWrap){ sizeWrap.style.display = cb.checked ? '' : 'none'; }
+        syncOpts(); updateProgress();
+      }
+      cb.addEventListener('change', commit);
+      if (sel){ sel.addEventListener('change', commit); }
+      box.appendChild(h('div', {class:'pitem'}, [ h('label', {class:'opt'}, [cb, h('span', {text:p.name})]), sizeWrap ]));
+    });
+    if (!(q.products || []).length){ box.appendChild(h('div', {class:'help', text:'עוד לא הוגדרו פריטים.'})); }
+    return box;
   }
 
   function renderGroups(q){
@@ -558,7 +607,12 @@
     panel.appendChild(h('div', {class:'ok-ic'}));
     panel.appendChild(h('h2', {text:'הפרטים התקבלו'}));
     panel.appendChild(h('p', {}, [richText(msg)]));
-    if (route.type === 'redirect' && route.url){
+    if (route.type === 'links'){
+      (route.links || []).forEach(function(it){
+        var nm = it.name + (it.size ? ' (' + it.size + ')' : '');
+        panel.appendChild(it.url ? h('a', {class:'btn', href:it.url}, ['לתשלום: ' + nm]) : h('p', {class:'help', text:nm + ' — ניצור איתך קשר לתשלום'}));
+      });
+    } else if (route.type === 'redirect' && route.url){
       panel.appendChild(h('a', {class:'btn', href:route.url}, [after.buttonLabel || 'המשך']));
       if ((after.mode || 'auto') === 'auto'){
         var secs = Math.max(0, Number(after.delaySec) || 0);
@@ -590,7 +644,8 @@
     var box = h('div', {class:'preview-result' + (ok ? '' : ' bad'), id:'preview_result'}, [
       h('div', {}, [h('b', {text:'תוצאת הבדיקה'})]),
       h('div', {text:'ניתוב שנבחר: ' + route.source}),
-      route.type === 'redirect'
+      route.type === 'links' ? h('div', {text:'הלקוח היה רואה כפתור תשלום לכל פריט: ' + (route.links || []).map(function(i){ return i.name + (i.url ? '' : ' (ללא קישור)'); }).join(', ')})
+      : route.type === 'redirect'
         ? h('div', {}, ['הלקוח היה מועבר אל: ', h('code', {text:route.url || '(חסר קישור!)'})])
         : h('div', {text:'הלקוח היה רואה הודעה: ' + (route.message || '(ללא הודעה)')}),
       h('div', {text:'נשמר בגיליון: ' + (payload.fixed.childName || '—') + ' · ' + (payload.fixed.phone || '—') + ' · ' + (payload.fixed.groups || 'ללא קבוצות')})
